@@ -2,17 +2,19 @@ import { xeroClient } from "../clients/xero-client.js";
 import { formatError } from "../helpers/format-error.js";
 import { getClientHeaders } from "../helpers/get-client-headers.js";
 import { XeroClientResponse } from "../types/tool-response.js";
-import { BankTransaction } from "xero-node";
-
-interface BankTransactionLineItem {
-  description: string;
-  quantity: number;
-  unitAmount: number;
-  accountCode: string;
-  taxType: string;
-}
+import { BankTransaction, LineItem } from "xero-node";
+import {
+  BankTransactionLineItemInput,
+  mergeBankTransactionLineItems,
+} from "../helpers/merge-bank-transaction-line-items.js";
 
 type BankTransactionType = "RECEIVE" | "SPEND";
+
+export interface UpdatedBankTransaction {
+  bankTransaction: BankTransaction;
+  /** Existing lines that carried tracking and were removed by this update */
+  droppedTrackedLines: LineItem[];
+}
 
 async function getBankTransaction(bankTransactionId: string): Promise<BankTransaction | undefined> {
   await xeroClient.authenticate();
@@ -32,7 +34,7 @@ async function updateBankTransaction(
   existingBankTransaction: BankTransaction,
   type?: BankTransactionType,
   contactId?: string,
-  lineItems?: BankTransactionLineItem[],
+  lineItems?: LineItem[],
   reference?: string,
   date?: string
 ): Promise<BankTransaction | undefined> {
@@ -70,10 +72,10 @@ export async function updateXeroBankTransaction(
   bankTransactionId: string,
   type?: BankTransactionType,
   contactId?: string,
-  lineItems?: BankTransactionLineItem[],
+  lineItems?: BankTransactionLineItemInput[],
   reference?: string,
   date?: string
-): Promise<XeroClientResponse<BankTransaction>> {
+): Promise<XeroClientResponse<UpdatedBankTransaction>> {
   try {
     const existingBankTransaction = await getBankTransaction(bankTransactionId);
 
@@ -81,12 +83,17 @@ export async function updateXeroBankTransaction(
       throw new Error(`Could not find bank transaction`);
     }
 
+    // Keep LineItemIDs and tracking for lines the caller identifies by ID.
+    const merged = lineItems
+      ? mergeBankTransactionLineItems(existingBankTransaction.lineItems, lineItems)
+      : undefined;
+
     const updatedBankTransaction = await updateBankTransaction(
       bankTransactionId,
       existingBankTransaction,
       type,
       contactId,
-      lineItems,
+      merged?.lineItems,
       reference,
       date
     );
@@ -96,7 +103,10 @@ export async function updateXeroBankTransaction(
     }
 
     return {
-      result: updatedBankTransaction,
+      result: {
+        bankTransaction: updatedBankTransaction,
+        droppedTrackedLines: merged?.droppedTrackedLines ?? [],
+      },
       isError: false,
       error: null
     };
